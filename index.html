@@ -962,6 +962,7 @@
   <div class="group">
     <button onclick="toggleLabels()" id="lbl-btn">顯示教室名稱</button>
     <button onclick="exportData()">💾 匯出</button>
+    <button onclick="exportBakedHTML()" title="把目前的所有資料製作成一個獨立的 HTML 檔，給同事直接開">📦 製作 HTML</button>
     <button onclick="importData()">📂 匯入</button>
     <button onclick="openOutputCenter()" title="列印 / 跨日總覽 / 匯出 Excel">📤 輸出</button>
     <button onclick="resetCurrent()" class="danger">重置本日</button>
@@ -1868,25 +1869,31 @@ function v7MigrateRoomIds() {
     });
   }
 
-  // 5. v7 強制升級底圖：偵測 state.versions 中的 map 不是 v7 內建 → 換成 v7 內建
-  const V7_MAP_NAME = 'v7 內建（114 簡化版 r4 精準對位）';
+  // 5. v7 強制升級底圖：62/61 雙版獨立
+  //    每版本都檢查自己的 mapName，只在「沒被使用者自訂」時才套用 v7 內建版
+  //    使用者可在「🗺️ 底圖管理」獨立為 v62 / v61 上傳不同底圖
+  const V7_MAP_NAME = 'v7 內建（114 簡化版 r5 雙版獨立）';
+  // 視為「需要升級」的舊 mapName：v6 預設、v7 r1~r4 內建
+  const upgradableNames = ['預設','使用者自訂（請替換）','v7 內建（114 簡化版）','v7 內建（114 簡化版 r2）','v7 內建（114 簡化版 r3 高解析）','v7 內建（114 簡化版 r4 精準對位）'];
   let mapUpgraded = false;
   if (state.versions && Array.isArray(state.versions)) {
     state.versions.forEach(v => {
-      if (v.mapName !== V7_MAP_NAME) {
+      // 升級條件：mapName 在「需升級」清單，或 map 完全不存在（首次開啟）
+      if (upgradableNames.includes(v.mapName) || !v.map) {
         if (v.id === 'v62') { v.map = MAP_62; v.mapName = V7_MAP_NAME; mapUpgraded = true; }
         else if (v.id === 'v61') { v.map = MAP_61; v.mapName = V7_MAP_NAME; mapUpgraded = true; }
       }
+      // 若使用者標記為自訂或其他自訂版本（mapName 不在 upgradableNames），則保留不動
     });
     if (mapUpgraded) {
       changed = true;
-      console.log('[v7] 已套用 v7 內建底圖');
+      console.log('[v7] 已套用 v7 內建底圖（雙版獨立）');
     }
   }
 
   // 5b. v7 r4：座標版本號偵測。底圖升級後，預設場地的 x/y/w/h 也需同步刷新（避免方塊還停在舊版位置）
   //     只刷新「非自訂」「非多邊形」場地的座標，保留：custom: true、points 已存在者
-  const V7_COORDS_VERSION = 'r4-precise';
+  const V7_COORDS_VERSION = 'r5-precise';
   const savedCoordsVer = (function(){ try { return localStorage.getItem('gfes_v7_coords_version'); } catch(_) { return null; } })();
   if (savedCoordsVer !== V7_COORDS_VERSION) {
     const idMap = {};
@@ -1921,7 +1928,7 @@ function v7MigrateRoomIds() {
 // v7：手動「重置底圖為 v7 內建」（保險按鈕）
 function v7ResetMapToBuiltin() {
   if (!confirm('要把所有版本的底圖重置為 v7 內建（114 簡化版）嗎？\n\n• 您之前自行上傳的底圖會被覆蓋\n• 場地座標與標記資料不受影響\n• 如需保留現有底圖，請先「💾 匯出（含底圖）」備份')) return;
-  const V7_MAP_NAME = 'v7 內建（114 簡化版 r4 精準對位）';
+  const V7_MAP_NAME = 'v7 內建（114 簡化版 r5 雙版獨立）';
   state.versions.forEach(v => {
     if (v.id === 'v62') { v.map = MAP_62; v.mapName = V7_MAP_NAME; }
     else if (v.id === 'v61') { v.map = MAP_61; v.mapName = V7_MAP_NAME; }
@@ -1945,7 +1952,7 @@ function v7ResetCoordsToBuiltin() {
     r.x = def.x; r.y = def.y; r.w = def.w; r.h = def.h;
     count++;
   });
-  try { localStorage.setItem('gfes_v7_coords_version', 'r4-precise'); } catch(_) {}
+  try { localStorage.setItem('gfes_v7_coords_version', 'r5-precise'); } catch(_) {}
   saveState();
   renderMap();
   showToast(`✅ 已重置 ${count} 個場地座標為 r4 版`);
@@ -1954,6 +1961,18 @@ function v7ResetCoordsToBuiltin() {
 // 從 localStorage 還原
 function loadState() {
   try {
+    // 【製作 HTML 注入區】優先檢查是否為製作版本
+    if (typeof window.__BAKED_DATA__ !== 'undefined' && window.__BAKED_DATA__) {
+      const baked = window.__BAKED_DATA__;
+      if (baked.versions) state.versions = baked.versions;
+      if (baked.currentVersionId) state.currentVersionId = baked.currentVersionId;
+      if (baked.rooms) state.rooms = baked.rooms;
+      if (baked.coords) state.coords = baked.coords;
+      if (baked.hidden) state.hidden = baked.hidden;
+      console.log('[製作版] 已載入內建資料,匯出時間:', baked.bakedAt);
+      return; // 跳過 localStorage,直接用內建資料
+    }
+
     const saved = localStorage.getItem('gfes_room_state_v2');
     if (saved) {
       const parsed = JSON.parse(saved);
@@ -4598,6 +4617,151 @@ function exportData() {
   a.download = `光復國小教室規劃${suffix}_${new Date().toISOString().slice(0,10)}.json`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// ===== 製作 HTML：把目前所有資料嵌入一個獨立 HTML 檔 =====
+// 取得自身 HTML 原始碼：三層降級（fetch → XHR → 使用者選檔）
+// 紀錄各層嘗試結果（給除錯用，最後失敗時顯示給使用者）
+const _bakedDebugLog = [];
+async function _bakedGetSelfHTML() {
+  _bakedDebugLog.length = 0;
+  const url = window.location.href.split('#')[0];  // 去掉 hash
+  _bakedDebugLog.push('URL: ' + url);
+
+  // 嘗試 1：fetch（一般 http/https 最快、no-store 避開 service worker 與快取）
+  try {
+    const r = await fetch(url, { cache: 'no-store', credentials: 'same-origin' });
+    _bakedDebugLog.push(`fetch: status=${r.status}, ok=${r.ok}, type=${r.type}`);
+    // 條件放寬：只要拿到 text 就用（即使 status=0 或 ok=false）
+    const text = await r.text();
+    if (text && text.length > 1000 && (text.includes('const ROOMS') || text.includes('教室空間互動規劃圖'))) {
+      _bakedDebugLog.push(`fetch: success, text length=${text.length}`);
+      return text;
+    }
+    _bakedDebugLog.push(`fetch: text 長度=${text ? text.length : 0}，內容不像 HTML，降級`);
+  } catch(e) {
+    _bakedDebugLog.push('fetch: error=' + (e && e.message || e));
+  }
+
+  // 嘗試 2：XMLHttpRequest 同步
+  try {
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', url, false);
+    xhr.send();
+    _bakedDebugLog.push(`XHR: status=${xhr.status}, length=${xhr.responseText ? xhr.responseText.length : 0}`);
+    const txt = xhr.responseText;
+    if (txt && txt.length > 1000 && (txt.includes('const ROOMS') || txt.includes('教室空間互動規劃圖'))) {
+      _bakedDebugLog.push('XHR: success');
+      return txt;
+    }
+  } catch(e) {
+    _bakedDebugLog.push('XHR: error=' + (e && e.message || e));
+  }
+
+  // 嘗試 3：請使用者選檔
+  return await new Promise((resolve, reject) => {
+    if (!confirm(
+      '⚠️ 瀏覽器無法自動讀取自身 HTML 檔案。\n\n' +
+      '除錯資訊：\n' + _bakedDebugLog.join('\n') + '\n\n' +
+      '請按「確定」後，在跳出的選擇視窗中選擇本工具的 HTML 檔（例：index.html）。\n\n' +
+      '提示：你可以選擇你電腦本機上的 v7 HTML 檔；選好後系統會把目前的所有資料嵌入這個檔的副本。'
+    )) {
+      reject(new Error('使用者取消'));
+      return;
+    }
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.html,.htm,text/html';
+    input.onchange = () => {
+      const f = input.files[0];
+      if (!f) { reject(new Error('未選擇檔案')); return; }
+      const reader = new FileReader();
+      reader.onload = e => {
+        const txt = e.target.result;
+        if (typeof txt !== 'string' || txt.length < 1000) {
+          reject(new Error('檔案內容看起來不像 HTML（長度不足）'));
+          return;
+        }
+        if (!txt.includes('教室空間互動規劃圖') && !txt.includes('const ROOMS')) {
+          if (!confirm('⚠️ 您選的檔案似乎不是這個工具的 HTML。仍要繼續嗎？')) {
+            reject(new Error('使用者取消'));
+            return;
+          }
+        }
+        resolve(txt);
+      };
+      reader.onerror = () => reject(new Error('讀檔失敗'));
+      reader.readAsText(f, 'utf-8');
+    };
+    input.click();
+  });
+}
+
+async function exportBakedHTML() {
+  if (!confirm(
+    '📦 製作 HTML\n\n' +
+    '會把目前的所有資料（教室座標、社團排程、版本、底圖）嵌入一個獨立 HTML 檔。\n\n' +
+    '產出的檔案：\n' +
+    '✅ 同事直接雙擊就能打開看到你的最新規劃\n' +
+    '✅ 適合上傳 GitHub Pages（命名 index.html）\n' +
+    '✅ 不需要再匯入 JSON\n\n' +
+    '⚠️ 檔案會比原本大（含底圖）\n' +
+    '⚠️ 在 file:// 環境下，可能會請您選擇自身 HTML 檔\n\n' +
+    '確定產出嗎？'
+  )) return;
+  try {
+    // 1. 抓取自身的 HTML 原始碼（三層降級）
+    let html = await _bakedGetSelfHTML();
+
+    // 2. 準備種子資料
+    const bakedData = {
+      bakedAt: new Date().toISOString(),
+      versions: state.versions,
+      currentVersionId: state.currentVersionId,
+      rooms: state.rooms,
+      coords: state.coords,
+      hidden: state.hidden || [],
+    };
+    // 3. 用 base64 包裝資料避免 HTML 解析衝突
+    const json = JSON.stringify(bakedData);
+    const bytes = new TextEncoder().encode(json);
+    let binStr = '';
+    for (let i = 0; i < bytes.length; i++) binStr += String.fromCharCode(bytes[i]);
+    const b64 = btoa(binStr);
+    const injection = `\n<script id="__baked_data_loader__">\n` +
+      `try {\n` +
+      `  const __b64 = "${b64}";\n` +
+      `  const __bin = atob(__b64);\n` +
+      `  const __bytes = new Uint8Array(__bin.length);\n` +
+      `  for (let i=0;i<__bin.length;i++) __bytes[i] = __bin.charCodeAt(i);\n` +
+      `  const __json = new TextDecoder().decode(__bytes);\n` +
+      `  window.__BAKED_DATA__ = JSON.parse(__json);\n` +
+      `} catch(e) { console.error('製作資料載入失敗', e); }\n` +
+      `<\/script>\n`;
+    // 4. 移除可能已存在的舊 baked 資料 (避免重複製作時資料疊加)
+    html = html.replace(/\n<script id="__baked_data_loader__">[\s\S]*?<\/script>\n/g, '\n');
+    // 5. 注入新資料到 </head> 之前
+    html = html.replace('</head>', injection + '</head>');
+    // 6. 下載
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `index.html`;
+    a.click();
+    URL.revokeObjectURL(url);
+    alert(
+      `✅ 已產出 index.html\n\n` +
+      `下一步：\n` +
+      `1. 把這個檔案上傳到 GitHub repository\n` +
+      `2. 等 1-2 分鐘\n` +
+      `3. 同事重新整理網址 → 看到你的最新規劃\n\n` +
+      `📌 檔名建議保持 index.html`
+    );
+  } catch(err) {
+    if (err && err.message === '使用者取消') return;
+    alert('❌ 製作失敗：' + (err && err.message || err));
+  }
 }
 
 function importData() {
